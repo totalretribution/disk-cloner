@@ -1,0 +1,9 @@
+# Rust build output
+/target
+
+# Disk image artifacts produced by disk-cloner (ignore the files, not the dirs)
+*.img.zst
+*.img.gz
+*.img
+ptable.sfdisk
+manifest.json
