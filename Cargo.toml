@@ -2,7 +2,10 @@
 name = "disk-cloner"
 version = "0.1.0"
 edition = "2021"
-description = "CLI tool to image an SSD/disk using partclone"
+description = "CLI tool to image, restore and clone a whole disk using partclone"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/totalretribution/disk-cloner"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -13,3 +16,33 @@ chrono = { version = "0.4", features = ["clock"] }
 
 [profile.release]
 opt-level = 3
+
+# --- Packaging (cargo-deb) ---
+[package.metadata.deb]
+maintainer = "totalretribution <totalretribution@users.noreply.github.com>"
+section = "admin"
+priority = "optional"
+depends = "partclone, util-linux, zstd, gzip"
+extended-description = """\
+disk-cloner images, restores and clones whole disks using partclone, copying \
+only used filesystem blocks. Saves the partition table and a per-partition \
+image, skips swap (recreated with mkswap on restore)."""
+assets = [
+    ["target/release/disk-cloner", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/disk-cloner/README.md", "644"],
+    ["LICENSE", "usr/share/doc/disk-cloner/LICENSE", "644"],
+]
+
+# --- Packaging (cargo-generate-rpm) ---
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/disk-cloner", dest = "/usr/bin/disk-cloner", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/disk-cloner/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/doc/disk-cloner/LICENSE", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+partclone = "*"
+util-linux = "*"
+zstd = "*"
+gzip = "*"
