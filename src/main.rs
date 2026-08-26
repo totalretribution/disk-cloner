@@ -2,7 +2,10 @@ mod backup;
 mod clone;
 mod lsblk;
 mod manifest;
+mod pcimage;
+mod ptable;
 mod restore;
+mod shrink;
 mod util;
 
 use anyhow::Result;

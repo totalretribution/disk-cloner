@@ -108,3 +108,102 @@ fn starts_part(src: &str, dev: &str) -> bool {
         false
     }
 }
+
+/// Parse a human size: bare bytes, or K/M/G/T (powers of 1024, optional "iB"/"B").
+pub fn parse_size(s: &str) -> Result<u64> {
+    let t = s.trim();
+    if t.is_empty() {
+        bail!("empty size");
+    }
+    let lower = t.to_ascii_lowercase();
+    let digits_end = lower
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(lower.len());
+    let (num, unit) = lower.split_at(digits_end);
+    let n: u64 = num.parse().with_context(|| format!("bad size '{}'", s))?;
+    let unit = unit.trim().trim_end_matches("ib").trim_end_matches('b');
+    let mult: u64 = match unit {
+        "" => 1,
+        "k" => 1 << 10,
+        "m" => 1 << 20,
+        "g" => 1 << 30,
+        "t" => 1 << 40,
+        other => bail!("unknown size unit '{}' in '{}'", other, s),
+    };
+    n.checked_mul(mult)
+        .ok_or_else(|| anyhow!("size '{}' overflows", s))
+}
+
+/// Size of a block device in bytes.
+pub fn device_size_bytes(dev: &str) -> Result<u64> {
+    let out = capture("blockdev", &["--getsize64", dev])?;
+    out.trim()
+        .parse()
+        .with_context(|| format!("parsing blockdev --getsize64 {}", dev))
+}
+
+/// Logical sector size of a block device in bytes.
+pub fn logical_sector_size(dev: &str) -> Result<u64> {
+    let out = capture("blockdev", &["--getss", dev])?;
+    out.trim()
+        .parse()
+        .with_context(|| format!("parsing blockdev --getss {}", dev))
+}
+
+/// Free bytes on the filesystem holding `path`.
+pub fn fs_free_bytes(path: &Path) -> Result<u64> {
+    let p = path.to_str().ok_or_else(|| anyhow!("path not UTF-8"))?;
+    let out = capture("df", &["-B1", "--output=avail", p])?;
+    out.lines()
+        .nth(1)
+        .and_then(|l| l.trim().parse().ok())
+        .ok_or_else(|| anyhow!("could not read free space for {}", p))
+}
+
+/// Round `v` up to the next multiple of `grain`.
+pub fn align_up(v: u64, grain: u64) -> u64 {
+    if grain == 0 {
+        return v;
+    }
+    v.div_ceil(grain) * grain
+}
+
+/// Round `v` down to a multiple of `grain`.
+pub fn align_down(v: u64, grain: u64) -> u64 {
+    if grain == 0 {
+        return v;
+    }
+    (v / grain) * grain
+}
+
+/// Human-readable byte count for plan output.
+pub fn human(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut v = bytes as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{} B", bytes)
+    } else {
+        format!("{:.1} {}", v, UNITS[i])
+    }
+}
+
+/// Run a shell pipeline and capture raw stdout. Unlike `run_pipeline` this uses
+/// a plain `sh -c` (no `pipefail`), so a producer killed by an early-closing
+/// consumer — `... | head -c N` — is not treated as failure.
+pub fn capture_pipeline(script: &str) -> Result<Vec<u8>> {
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .stdin(Stdio::null())
+        .output()
+        .context("spawning shell pipeline")?;
+    if !out.status.success() {
+        bail!("pipeline failed ({}): {}", out.status, script);
+    }
+    Ok(out.stdout)
+}
