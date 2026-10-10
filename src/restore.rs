@@ -166,7 +166,7 @@ pub fn run(args: RestoreArgs) -> Result<()> {
 }
 
 /// Parse repeated `--part-size N=SIZE` values into partition number -> bytes.
-fn parse_part_sizes(raw: &[String]) -> Result<BTreeMap<u32, u64>> {
+pub fn parse_part_sizes(raw: &[String]) -> Result<BTreeMap<u32, u64>> {
     let mut out = BTreeMap::new();
     for item in raw {
         let (n, size) = item

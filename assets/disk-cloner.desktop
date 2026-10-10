@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Disk Cloner
+GenericName=Disk Imaging
+Comment=Back up, restore, clone and write whole drives
+Exec=disk-cloner-gui
+Icon=disk-cloner
+Terminal=false
+Categories=System;
+Keywords=disk;drive;clone;backup;restore;image;iso;usb;partclone;
+StartupWMClass=disk-cloner

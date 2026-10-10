@@ -107,41 +107,13 @@ pub fn run(image_dir: &Path, target: &str, m: &Manifest, opts: &ShrinkOpts) -> R
     }
 
     let pt = Ptable::load(&image_dir.join(&m.ptable_file))?;
-    let geo = geometry(&pt, target)?;
-    let mut slots = build_slots(&pt, m, image_dir, opts, &geo)?;
-
-    if let Some(0) = opts.swap_size {
-        slots.retain(|s| {
-            if s.kind == Kind::Swap {
-                println!("[plan] dropping swap #{} (--swap-size 0)", s.number);
-                false
-            } else {
-                true
-            }
-        });
-    }
-    validate_pins(&slots, opts)?;
-
-    // One grain of alignment slack per partition is held back from the budget.
-    let budget = (geo.last - geo.first + 1)
-        .checked_sub(geo.grain * (slots.len() as u64 + 1))
-        .with_context(|| format!("{} is far too small for this image", target))?;
-
-    let fixed_total: u64 = slots
-        .iter()
-        .filter(|s| s.kind == Kind::Fixed)
-        .map(|s| util::align_up(s.orig, geo.grain))
-        .sum();
-    if fixed_total > budget {
-        bail!(
-            "cannot fit: partitions partclone cannot resize need {} on their own, but \
-             {} only offers {}.\nMust keep their size: {}",
-            util::human(fixed_total * geo.ss),
-            target,
-            util::human(budget * geo.ss),
-            fixed_list(&slots)
-        );
-    }
+    let geo = geometry(
+        &pt,
+        target,
+        util::logical_sector_size(target)?,
+        util::device_size_bytes(target)?,
+    )?;
+    let (mut slots, budget) = prepare(&pt, m, image_dir, target, opts, &geo)?;
 
     // --- Stage 0: projected layout from image headers alone. No writes. ---
     let scratch_need = scratch_requirement(&slots, m, image_dir);
@@ -261,9 +233,143 @@ pub fn run(image_dir: &Path, target: &str, m: &Manifest, opts: &ShrinkOpts) -> R
     Ok(())
 }
 
-fn geometry(pt: &Ptable, target: &str) -> Result<Geometry> {
+/// Pair the saved layout with the manifest, apply `--swap-size 0` and the pins,
+/// and check that the partitions partclone cannot resize fit at all. Returns
+/// the slots and the sector budget they share.
+fn prepare(
+    pt: &Ptable,
+    m: &Manifest,
+    image_dir: &Path,
+    target: &str,
+    opts: &ShrinkOpts,
+    geo: &Geometry,
+) -> Result<(Vec<Slot>, u64)> {
+    let mut slots = build_slots(pt, m, image_dir, opts, geo)?;
+
+    if let Some(0) = opts.swap_size {
+        slots.retain(|s| {
+            if s.kind == Kind::Swap {
+                println!("[plan] dropping swap #{} (--swap-size 0)", s.number);
+                false
+            } else {
+                true
+            }
+        });
+    }
+    validate_pins(&slots, opts)?;
+
+    // One grain of alignment slack per partition is held back from the budget.
+    let budget = (geo.last - geo.first + 1)
+        .checked_sub(geo.grain * (slots.len() as u64 + 1))
+        .with_context(|| format!("{} is far too small for this image", target))?;
+
+    let fixed_total: u64 = slots
+        .iter()
+        .filter(|s| s.kind == Kind::Fixed)
+        .map(|s| util::align_up(s.orig, geo.grain))
+        .sum();
+    if fixed_total > budget {
+        bail!(
+            "cannot fit: partitions partclone cannot resize need {} on their own, but \
+             {} only offers {}.\nMust keep their size: {}",
+            util::human(fixed_total * geo.ss),
+            target,
+            util::human(budget * geo.ss),
+            fixed_list(&slots)
+        );
+    }
+    Ok((slots, budget))
+}
+
+/// How one partition fares in a refit.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Refit {
+    /// partclone cannot resize this filesystem; it keeps its size.
+    Unchanged,
+    /// ext2/3/4, shrunk or grown to its share.
+    Resized,
+    /// ext2/3/4 or swap held at a `--part-size` value.
+    Pinned,
+    /// Swap, recreated by mkswap at its new size.
+    Recreated,
+}
+
+/// One row of a projected refit.
+#[derive(Clone, Debug)]
+pub struct ProjectedPart {
+    pub number: u32,
+    pub fstype: String,
+    pub refit: Refit,
+    pub orig_bytes: u64,
+    /// None when the image header could not be read: staging decides it.
+    pub new_bytes: Option<u64>,
+    /// Data in use, from the partclone header (ext partitions).
+    pub used_bytes: Option<u64>,
+}
+
+/// What `restore --shrink --dry-run` would print, as data.
+#[derive(Clone, Debug)]
+pub struct Projection {
+    pub target_bytes: u64,
+    /// Space the partitions can share after alignment slack.
+    pub usable_bytes: u64,
+    /// Scratch space staging will need.
+    pub scratch_need: u64,
+    pub parts: Vec<ProjectedPart>,
+}
+
+/// Project a refit of the image onto a target of the given size and sector
+/// size, from the image headers alone. Reads the image directory, needs no
+/// root and touches no disk, so a front end can show the plan up front.
+pub fn project(
+    image_dir: &Path,
+    m: &Manifest,
+    target: &str,
+    target_bytes: u64,
+    target_ss: u64,
+    opts: &ShrinkOpts,
+) -> Result<Projection> {
+    let pt = Ptable::load(&image_dir.join(&m.ptable_file))?;
+    let geo = geometry(&pt, target, target_ss, target_bytes)?;
+    let (mut slots, budget) = prepare(&pt, m, image_dir, target, opts, &geo)?;
+    let scratch_need = scratch_requirement(&slots, m, image_dir);
+    let measurable = slots
+        .iter()
+        .all(|s| s.kind != Kind::Ext || s.info.is_some());
+    if measurable {
+        for s in slots.iter_mut() {
+            s.min = estimated_min(s, &geo);
+        }
+        validate_pin_minimums(&slots, &geo)?;
+        allocate(&mut slots, budget, &geo, opts, m)?;
+        layout(&pt, &slots, &geo)?;
+    }
+    let parts = slots
+        .iter()
+        .map(|s| ProjectedPart {
+            number: s.number,
+            fstype: s.fstype.clone(),
+            refit: match (s.kind, s.pin) {
+                (Kind::Fixed, _) => Refit::Unchanged,
+                (_, Some(_)) => Refit::Pinned,
+                (Kind::Ext, None) => Refit::Resized,
+                (Kind::Swap, None) => Refit::Recreated,
+            },
+            orig_bytes: s.orig * geo.ss,
+            new_bytes: (measurable || s.kind == Kind::Fixed).then_some(s.alloc * geo.ss),
+            used_bytes: s.info.as_ref().map(|i| i.used_bytes),
+        })
+        .collect();
+    Ok(Projection {
+        target_bytes,
+        usable_bytes: budget * geo.ss,
+        scratch_need,
+        parts,
+    })
+}
+
+fn geometry(pt: &Ptable, target: &str, target_ss: u64, target_bytes: u64) -> Result<Geometry> {
     let ss = pt.sector_size;
-    let target_ss = util::logical_sector_size(target)?;
     if target_ss != ss {
         bail!(
             "sector size mismatch: the image was taken with {}-byte sectors, {} uses {}. \
@@ -273,7 +379,6 @@ fn geometry(pt: &Ptable, target: &str) -> Result<Geometry> {
             target_ss
         );
     }
-    let target_bytes = util::device_size_bytes(target)?;
     let total_sectors = target_bytes / ss;
     let grain = std::cmp::max(1, (1 << 20) / ss); // 1 MiB alignment
     let first = util::align_up(std::cmp::max(pt.first_lba.unwrap_or(grain), grain), grain);
@@ -901,5 +1006,104 @@ fn fsck(dev: &str) -> Result<()> {
         Some(0..=3) => Ok(()),
         Some(c) => bail!("e2fsck on {} failed (exit {})", dev, c),
         None => bail!("e2fsck on {} terminated by signal", dev),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manifest::PartEntry;
+
+    const GIB: u64 = 1 << 30;
+
+    /// An image directory with vfat, ext4 (uncompressed, readable header) and
+    /// swap, taken from a 465.8 GiB disk.
+    fn image_dir(name: &str) -> (PathBuf, Manifest) {
+        let dir = std::env::temp_dir().join(format!("dc-shrink-{}-{}", name, std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("ptable.sfdisk"),
+            "label: gpt\nfirst-lba: 34\nsector-size: 512\n\n\
+             /dev/sda1 : start=2048, size=1998848, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B\n\
+             /dev/sda2 : start=2000896, size=924405760, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4\n\
+             /dev/sda3 : start=926406656, size=50331648, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F\n",
+        )
+        .unwrap();
+        // partclone v2 header: 12.9 GiB used of 4 KiB blocks.
+        let mut h = vec![0u8; 128];
+        h[..15].copy_from_slice(b"partclone-image");
+        h[30..34].copy_from_slice(b"0002");
+        h[36..40].copy_from_slice(b"EXTF");
+        let used_blocks: u64 = (129 * GIB / 10) / 4096;
+        h[60..68].copy_from_slice(&(924405760u64 * 512 / 4096).to_le_bytes());
+        h[68..76].copy_from_slice(&used_blocks.to_le_bytes());
+        h[84..88].copy_from_slice(&4096u32.to_le_bytes());
+        std::fs::write(dir.join("p2.img"), &h).unwrap();
+
+        let part = |number, fstype: &str, sectors: u64, cloner: &str, image: Option<&str>| PartEntry {
+            source: format!("/dev/sda{}", number),
+            number,
+            fstype: Some(fstype.to_string()),
+            size_bytes: sectors * 512,
+            label: None,
+            uuid: None,
+            cloner: cloner.to_string(),
+            image_file: image.map(String::from),
+        };
+        let m = Manifest {
+            tool_version: "test".into(),
+            created_utc: "2026-06-29T13:01:53Z".into(),
+            source_device: "/dev/sda".into(),
+            disk_size_bytes: 500107862016,
+            disk_model: None,
+            compression: "none".into(),
+            ptable_file: "ptable.sfdisk".into(),
+            partitions: vec![
+                part(1, "vfat", 1998848, "partclone.vfat", Some("p1.img")),
+                part(2, "ext4", 924405760, "partclone.ext4", Some("p2.img")),
+                part(3, "swap", 50331648, "mkswap", None),
+            ],
+        };
+        (dir, m)
+    }
+
+    fn opts() -> ShrinkOpts {
+        ShrinkOpts {
+            swap_size: None,
+            part_size: BTreeMap::new(),
+            scratch: PathBuf::from("/var/tmp"),
+            keep_scratch: false,
+            dry_run: true,
+            yes: false,
+        }
+    }
+
+    #[test]
+    fn projects_refit_onto_smaller_disk() {
+        let (dir, m) = image_dir("refit");
+        let target = 120034123776; // 111.8 GiB
+        let p = project(&dir, &m, "/dev/sdb", target, 512, &opts()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(p.target_bytes, target);
+        let refits: Vec<Refit> = p.parts.iter().map(|x| x.refit).collect();
+        assert_eq!(refits, [Refit::Unchanged, Refit::Resized, Refit::Recreated]);
+        assert_eq!(p.parts[0].new_bytes, Some(p.parts[0].orig_bytes));
+        let ext = &p.parts[1];
+        assert_eq!(ext.used_bytes, Some((129 * GIB / 10) / 4096 * 4096));
+        let ext_new = ext.new_bytes.unwrap();
+        assert!(ext_new > ext.used_bytes.unwrap() && ext_new < ext.orig_bytes);
+        assert!(p.parts[2].new_bytes.unwrap() < p.parts[2].orig_bytes);
+        let total: u64 = p.parts.iter().map(|x| x.new_bytes.unwrap()).sum();
+        assert!(total <= p.usable_bytes);
+        assert!(p.scratch_need >= ext.used_bytes.unwrap());
+    }
+
+    #[test]
+    fn projection_refuses_sector_size_mismatch() {
+        let (dir, m) = image_dir("sector");
+        let err = project(&dir, &m, "/dev/sdb", 120034123776, 4096, &opts()).unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(err.to_string().contains("sector size mismatch"));
     }
 }

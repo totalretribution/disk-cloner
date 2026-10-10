@@ -4,6 +4,9 @@ Rust CLI that images a whole SSD/disk using [partclone](https://partclone.org/).
 Saves the partition table plus a per-partition partclone image (only used blocks,
 not free space), compressed. Restores the lot onto a target disk.
 
+It also writes plain disk images (`.iso`, `.img`, or either compressed as
+`.zst`) onto a disk, like `zstd -dc x.iso.zst | dd of=/dev/sdc bs=4M conv=fsync`.
+
 ## How it works
 
 - **partition table** — dumped with `sfdisk -d`, restored with `sfdisk`.
@@ -34,6 +37,45 @@ sudo apt install partclone   # Debian/Ubuntu
 cargo build --release
 ```
 
+## GUI
+
+An optional egui front end, `disk-cloner-gui`, has three screens:
+
+- **Back up**: a drive into a folder.
+- **Write**: an image onto a drive. Takes a disk-cloner backup folder or an
+  `.iso`, `.img` or `.zst` file and works out which it is, so restoring a backup
+  and writing an ISO happen in the same place. Drop either onto the window.
+- **Clone**: a drive straight onto another.
+
+```
+cargo build --release --features gui
+./target/release/disk-cloner-gui
+```
+
+The release `.deb` and `.rpm` include it with a desktop entry, so it shows up
+in the application menu as Disk Cloner. The release tarball carries
+`disk-cloner.desktop` and `disk-cloner.svg` to install by hand.
+
+Run it as your normal user. Drives stay listed in a sidebar, with the running
+system's drive locked as a target. Each screen shows its plan before anything
+runs, read directly without root: the partitions and how each is copied, the
+refitted layout when a backup goes onto a smaller drive (the same projection
+`restore --shrink --dry-run` prints), and the checksum an image will be checked
+against.
+
+The button at the bottom runs the `disk-cloner` CLI through `pkexec`, so only
+that process runs as root and you get your desktop's password dialog. The CLI
+must sit next to `disk-cloner-gui` or be on `PATH`.
+
+- The CLI's "retype the target path" check appears as a dialog listing what is
+  on the drive. Cancel it and the CLI aborts without writing.
+- The progress screen shows each stage as the CLI reaches it, partclone's or
+  `write`'s live progress, and the raw output. **Stop** sends SIGTERM to the
+  whole job, which leaves a half-written target unusable.
+
+The GUI embeds IBM Plex Sans and Mono (SIL Open Font License, see
+`assets/fonts/OFL.txt`).
+
 ## Usage
 
 ```
@@ -52,12 +94,62 @@ disk-cloner info /mnt/backup/laptop
 # restore onto another disk (prints plan unless --yes; ERASES target)
 sudo disk-cloner restore /mnt/backup/laptop /dev/sdb --yes
 
+# write an ISO / raw image to a USB stick (prints plan unless --yes; ERASES target)
+sudo disk-cloner write kiosk-base-v0.1.10.iso.zst /dev/sdc --yes
+
 # restore onto a SMALLER disk: see the projected layout, write nothing
 sudo disk-cloner restore /mnt/backup/laptop /dev/sdb --shrink --dry-run
 
 # ...then do it
 sudo disk-cloner restore /mnt/backup/laptop /dev/sdb --shrink --yes
 ```
+
+## Writing ISO and raw images
+
+`write` streams an image straight onto a whole disk. The format is detected from
+the file's first bytes, not its name:
+
+- **raw** — `.iso`, `.img`, anything without a recognised compression header
+- **zstd** — decompressed on the fly (built in; the `zstd` tool is not needed).
+  Includes `pzstd` output and images made with `--long` up to `--long=31`.
+
+gzip and xz images are refused rather than written compressed. Decompress them
+first or recompress with zstd.
+
+Before writing it checks that the target is a whole disk, is not mounted, and is
+big enough. For zstd the exact uncompressed size is read from the frame headers
+without decompressing (milliseconds, even for multi-frame and `pzstd` files). If
+any frame does not record its size, as with `cat x.iso | zstd`, the image is
+decompressed once without writing anything to measure it, so a too-small target
+is refused before it is touched. The device is opened exclusively, so the kernel refuses the
+write if anything still holds it. Data is flushed every 64 MiB, so the progress
+line shows what has reached the disk, and the device is fsynced before the tool
+reports success. `partprobe` then re-reads the new partition table.
+
+### Checksums
+
+If `<image>.sha256` sits next to the image (e.g. `kiosk.iso.zst.sha256`), it is
+checked automatically. Point at another file, or give a hash directly, with
+`--sha256`; skip the check with `--no-checksum`.
+
+```
+sudo disk-cloner write kiosk.iso.zst /dev/sdc --sha256 SHA256SUMS --yes
+sudo disk-cloner write kiosk.iso.zst /dev/sdc --sha256 8f4343...7aa4 --yes
+```
+
+Accepted: `sha256sum` output (`hash  name` or `hash *name`), BSD style
+(`SHA256 (name) = hash`) or a bare hash. A file listing several images is
+matched by file name.
+
+- A hash of the **image file** (the entry names `kiosk.iso.zst`, or a bare hash)
+  is checked before anything is written, so a corrupt download never reaches
+  the disk.
+- A hash of the **decompressed image** (the entry names `kiosk.iso`) is checked
+  by decompressing once before writing, then checked again against the data
+  written.
+
+A checksum catches corrupt or incomplete downloads. It does not prove the image
+is genuine if the hash came from the same place as the image.
 
 ## Restoring onto a smaller disk
 
@@ -153,4 +245,5 @@ sudo disk-cloner restore ./laptop /dev/sdb --shrink \
 | `list`    | Show block devices                                 |
 | `backup`  | Image a disk → directory (`-c zstd\|gzip\|none`)     |
 | `restore` | Write an image directory → target disk             |
+| `write`   | Write a raw `.iso`/`.img` (optionally `.zst`) → disk |
 | `info`    | Print an image's `manifest.json`                   |
