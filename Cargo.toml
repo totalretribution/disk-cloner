@@ -15,6 +15,21 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["clock"] }
 zstd = "0.14.1"
 sha2 = "0.11.0"
+eframe = { version = "0.36", optional = true }
+rfd = { version = "0.17", optional = true }
+
+[features]
+# Build the egui front end: cargo build --release --features gui
+gui = ["dep:eframe", "dep:rfd"]
+
+[[bin]]
+name = "disk-cloner"
+path = "src/main.rs"
+
+[[bin]]
+name = "disk-cloner-gui"
+path = "src/bin/disk-cloner-gui/main.rs"
+required-features = ["gui"]
 
 [profile.release]
 opt-level = 3

@@ -37,6 +37,41 @@ sudo apt install partclone   # Debian/Ubuntu
 cargo build --release
 ```
 
+## GUI
+
+An optional egui front end, `disk-cloner-gui`, has three screens:
+
+- **Back up**: a drive into a folder.
+- **Write**: an image onto a drive. Takes a disk-cloner backup folder or an
+  `.iso`, `.img` or `.zst` file and works out which it is, so restoring a backup
+  and writing an ISO happen in the same place. Drop either onto the window.
+- **Clone**: a drive straight onto another.
+
+```
+cargo build --release --features gui
+./target/release/disk-cloner-gui
+```
+
+Run it as your normal user. Drives stay listed in a sidebar, with the running
+system's drive locked as a target. Each screen shows its plan before anything
+runs, read directly without root: the partitions and how each is copied, the
+refitted layout when a backup goes onto a smaller drive (the same projection
+`restore --shrink --dry-run` prints), and the checksum an image will be checked
+against.
+
+The button at the bottom runs the `disk-cloner` CLI through `pkexec`, so only
+that process runs as root and you get your desktop's password dialog. The CLI
+must sit next to `disk-cloner-gui` or be on `PATH`.
+
+- The CLI's "retype the target path" check appears as a dialog listing what is
+  on the drive. Cancel it and the CLI aborts without writing.
+- The progress screen shows each stage as the CLI reaches it, partclone's or
+  `write`'s live progress, and the raw output. **Stop** sends SIGTERM to the
+  whole job, which leaves a half-written target unusable.
+
+The GUI embeds IBM Plex Sans and Mono (SIL Open Font License, see
+`assets/fonts/OFL.txt`).
+
 ## Usage
 
 ```

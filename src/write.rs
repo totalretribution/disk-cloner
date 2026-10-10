@@ -66,7 +66,7 @@ fn is_skippable(head: &[u8]) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Format {
+pub enum Format {
     Raw,
     Zstd,
 }
@@ -115,15 +115,16 @@ impl<R: Read> Read for Counting<R> {
     }
 }
 
-struct Probe {
-    format: Format,
-    file_size: u64,
+/// What `probe_image` learns from an image file without decompressing it.
+pub struct Probe {
+    pub format: Format,
+    pub file_size: u64,
     /// Exact uncompressed size, or None for a zstd image whose frames do not all
     /// record their size (e.g. compressed from a pipe). `measure` fills the gap.
-    raw_size: Option<u64>,
+    pub raw_size: Option<u64>,
 }
 
-fn probe_image(path: &Path) -> Result<Probe> {
+pub fn probe_image(path: &Path) -> Result<Probe> {
     let mut f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let meta = f.metadata()?;
     if !meta.is_file() {

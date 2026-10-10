@@ -1,17 +1,6 @@
-mod backup;
-mod checksum;
-mod clone;
-mod lsblk;
-mod manifest;
-mod pcimage;
-mod ptable;
-mod restore;
-mod shrink;
-mod util;
-mod write;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use disk_cloner::{backup, clone, lsblk, manifest, restore, write};
 
 /// Image a whole SSD/disk (partition table + every partition) using partclone.
 #[derive(Parser)]
