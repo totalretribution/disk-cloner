@@ -1,4 +1,5 @@
 mod backup;
+mod checksum;
 mod clone;
 mod lsblk;
 mod manifest;
@@ -7,6 +8,7 @@ mod ptable;
 mod restore;
 mod shrink;
 mod util;
+mod write;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -33,6 +35,9 @@ enum Command {
     /// Clone one disk directly onto another (no intermediate image).
     Clone(clone::CloneArgs),
 
+    /// Write a raw disk image (.iso, .img, or zstd-compressed .zst) onto a disk.
+    Write(write::WriteArgs),
+
     /// Show the manifest of an existing image directory.
     Info {
         /// Image directory containing manifest.json.
@@ -47,6 +52,7 @@ fn main() -> Result<()> {
         Command::Backup(args) => backup::run(args),
         Command::Restore(args) => restore::run(args),
         Command::Clone(args) => clone::run(args),
+        Command::Write(args) => write::run(args),
         Command::Info { dir } => {
             let m = manifest::Manifest::load(&dir)?;
             println!("{}", serde_json::to_string_pretty(&m)?);
