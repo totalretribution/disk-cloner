@@ -39,13 +39,18 @@ opt-level = 3
 maintainer = "totalretribution <totalretribution@users.noreply.github.com>"
 section = "admin"
 priority = "optional"
-depends = "partclone, util-linux, zstd, gzip"
+depends = "partclone, util-linux, zstd, gzip, pkexec | policykit-1"
 extended-description = """\
 disk-cloner images, restores and clones whole disks using partclone, copying \
 only used filesystem blocks. Saves the partition table and a per-partition \
-image, skips swap (recreated with mkswap on restore)."""
+image, skips swap (recreated with mkswap on restore). Also writes .iso/.img \
+images to a drive. Includes disk-cloner-gui, a desktop front end."""
 assets = [
     ["target/release/disk-cloner", "usr/bin/", "755"],
+    ["target/release/disk-cloner-gui", "usr/bin/", "755"],
+    ["assets/disk-cloner.desktop", "usr/share/applications/", "644"],
+    ["assets/icons/disk-cloner.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["assets/fonts/OFL.txt", "usr/share/doc/disk-cloner/OFL-IBM-Plex.txt", "644"],
     ["README.md", "usr/share/doc/disk-cloner/README.md", "644"],
     ["LICENSE", "usr/share/doc/disk-cloner/LICENSE", "644"],
 ]
@@ -54,6 +59,10 @@ assets = [
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/disk-cloner", dest = "/usr/bin/disk-cloner", mode = "755" },
+    { source = "target/release/disk-cloner-gui", dest = "/usr/bin/disk-cloner-gui", mode = "755" },
+    { source = "assets/disk-cloner.desktop", dest = "/usr/share/applications/disk-cloner.desktop", mode = "644" },
+    { source = "assets/icons/disk-cloner.svg", dest = "/usr/share/icons/hicolor/scalable/apps/disk-cloner.svg", mode = "644" },
+    { source = "assets/fonts/OFL.txt", dest = "/usr/share/doc/disk-cloner/OFL-IBM-Plex.txt", mode = "644", doc = true },
     { source = "README.md", dest = "/usr/share/doc/disk-cloner/README.md", mode = "644", doc = true },
     { source = "LICENSE", dest = "/usr/share/doc/disk-cloner/LICENSE", mode = "644", doc = true },
 ]
@@ -63,3 +72,4 @@ partclone = "*"
 util-linux = "*"
 zstd = "*"
 gzip = "*"
+polkit = "*"

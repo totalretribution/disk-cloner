@@ -1,7 +1,7 @@
 name: release
 
-# Build a binary tarball, .deb and .rpm whenever a vX.Y.Z tag is pushed,
-# then attach them to a GitHub Release for that tag.
+# Build a binary tarball, .deb and .rpm (CLI and GUI) whenever a vX.Y.Z tag
+# is pushed, then attach them to a GitHub Release for that tag.
 on:
   push:
     tags:
@@ -22,8 +22,10 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build release binary
-        run: cargo build --release --locked
+      # The GUI loads its X11/Wayland/GL libraries at runtime, so the build
+      # needs no extra system packages.
+      - name: Build release binaries
+        run: cargo build --release --locked --features gui
 
       - name: Install packaging tools
         run: |
@@ -41,9 +43,16 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           VER="${GITHUB_REF_NAME#v}"
-          # Binary tarball
-          tar -C target/release -czf "dist/disk-cloner-${VER}-x86_64-linux.tar.gz" disk-cloner
+          # Tarball: both binaries plus the desktop entry and icon
+          STAGE="disk-cloner-${VER}-x86_64-linux"
+          mkdir -p "$STAGE"
+          cp -v target/release/disk-cloner target/release/disk-cloner-gui \
+                assets/disk-cloner.desktop assets/icons/disk-cloner.svg \
+                README.md LICENSE "$STAGE/"
+          tar -czf "dist/${STAGE}.tar.gz" "$STAGE"
+          # Bare binaries (the upload glob below matches both names)
           cp -v target/release/disk-cloner "dist/disk-cloner-${VER}-x86_64-linux"
+          cp -v target/release/disk-cloner-gui "dist/disk-cloner-gui-${VER}-x86_64-linux"
           # Packages
           cp -v target/debian/*.deb dist/
           cp -v target/generate-rpm/*.rpm dist/

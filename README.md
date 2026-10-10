@@ -52,6 +52,10 @@ cargo build --release --features gui
 ./target/release/disk-cloner-gui
 ```
 
+The release `.deb` and `.rpm` include it with a desktop entry, so it shows up
+in the application menu as Disk Cloner. The release tarball carries
+`disk-cloner.desktop` and `disk-cloner.svg` to install by hand.
+
 Run it as your normal user. Drives stay listed in a sidebar, with the running
 system's drive locked as a target. Each screen shows its plan before anything
 runs, read directly without root: the partitions and how each is copied, the
