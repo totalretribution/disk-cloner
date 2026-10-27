@@ -8,13 +8,15 @@ mod disks;
 mod forms;
 mod runner;
 mod theme;
+mod update;
 
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
     self, Align, Button, CollapsingHeader, Frame, Id, Layout, Margin, RichText, ScrollArea, Stroke,
-    TextEdit, TextStyle, Ui, Vec2,
+    TextStyle, Ui, Vec2,
 };
 
 use disk_cloner::lsblk::{self, BlkDev};
@@ -23,6 +25,9 @@ use disks::{describe, find, is_system, size};
 use forms::{Action, BackupForm, CloneForm, WriteForm};
 use runner::{Job, Log, Outcome};
 use theme::{chip, mono, muted, small, ACCENT, DANGER, DANGER_TEXT, MUTED, OK, TEXT};
+
+/// How long the erase dialog keeps its Erase button disabled.
+const ERASE_ARM_DELAY: Duration = Duration::from_secs(2);
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -36,7 +41,11 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Disk Cloner",
         options,
-        Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))),
+        Box::new(|cc| {
+            let mut app = App::new(&cc.egui_ctx);
+            app.update_check = update::spawn(&cc.egui_ctx);
+            Ok(Box::new(app))
+        }),
     )
 }
 
@@ -73,10 +82,15 @@ struct App {
     log: Log,
     job: Option<Job>,
     view: Option<JobView>,
-    prompt_input: String,
+    /// When the erase dialog for the pending prompt first appeared.
+    prompt_shown: Option<Instant>,
     stop_confirm: bool,
     close_confirm: bool,
     allow_close: bool,
+    /// Started from `main`, so tests never touch the network.
+    update_check: Option<Receiver<String>>,
+    /// Tag of a newer release, once the check finds one.
+    new_version: Option<String>,
 }
 
 impl App {
@@ -92,10 +106,12 @@ impl App {
             log: Log::default(),
             job: None,
             view: None,
-            prompt_input: String::new(),
+            prompt_shown: None,
             stop_confirm: false,
             close_confirm: false,
             allow_close: false,
+            update_check: None,
+            new_version: None,
         };
         app.refresh_disks();
         app
@@ -113,7 +129,7 @@ impl App {
 
     fn start(&mut self, a: Action, ctx: &egui::Context) {
         self.log.clear();
-        self.prompt_input.clear();
+        self.prompt_shown = None;
         let mut view = JobView {
             title: a.title,
             subtitle: a.subtitle,
@@ -157,10 +173,24 @@ impl App {
                     v.ended = Some(ended);
                 }
                 self.job = None;
-                self.prompt_input.clear();
+                self.prompt_shown = None;
                 // Partition tables and mounts may have changed.
                 self.refresh_disks();
             }
+        }
+    }
+
+    fn poll_update(&mut self) {
+        let Some(rx) = &self.update_check else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(v) => {
+                self.new_version = Some(v);
+                self.update_check = None;
+            }
+            Err(TryRecvError::Disconnected) => self.update_check = None,
+            Err(TryRecvError::Empty) => {}
         }
     }
 
@@ -330,6 +360,19 @@ impl App {
                     } else {
                         "Writing to a drive asks for your password first."
                     }));
+                    if let (Some(v), false) = (&self.new_version, running) {
+                        ui.add_space(6.0);
+                        ui.hyperlink_to(
+                            RichText::new(format!("{} available", v))
+                                .color(ACCENT)
+                                .size(13.0),
+                            update::RELEASES_URL,
+                        )
+                        .on_hover_text(format!(
+                            "You have v{}. Opens the release page.",
+                            env!("CARGO_PKG_VERSION")
+                        ));
+                    }
                 });
         });
     }
@@ -525,7 +568,8 @@ impl App {
             });
     }
 
-    /// The CLI's "retype the target path" prompt, as a dialog.
+    /// The CLI's "retype the target path" prompt, as a yes/no dialog. The
+    /// GUI types the path for the CLI when Erase is clicked.
     fn confirm_modal(&mut self, ctx: &egui::Context) {
         let Some(path) = self.log.pending_prompt() else {
             return;
@@ -539,6 +583,7 @@ impl App {
             .map(|v| v.title.clone())
             .unwrap_or_default();
         let drive = find(&self.disks, &path);
+        let shown = *self.prompt_shown.get_or_insert_with(Instant::now);
         let mut answer = None;
         let modal = egui::Modal::new(Id::new("confirm-erase")).show(ctx, |ui| {
             ui.set_width(460.0);
@@ -589,27 +634,22 @@ impl App {
                         }
                     }
                 });
-            ui.label(muted(format!("Type {} to confirm", path)).size(13.0));
-            let resp = ui.add(
-                TextEdit::singleline(&mut self.prompt_input)
-                    .font(TextStyle::Monospace)
-                    .hint_text(path.as_str())
-                    .desired_width(f32::INFINITY),
-            );
-            if self.prompt_input.is_empty() && !resp.has_focus() {
-                resp.request_focus();
+            // Erase stays disabled briefly so a stray click can't confirm.
+            let wait = ERASE_ARM_DELAY.saturating_sub(shown.elapsed());
+            if !wait.is_zero() {
+                ctx.request_repaint_after(wait);
             }
-            let matches = self.prompt_input.trim() == path;
-            let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let erase = theme::danger_button(&format!("Erase {}", path));
-                if ui.add_enabled(matches, erase).clicked() || (matches && enter) {
+                if ui.add_enabled(wait.is_zero(), erase).clicked() {
                     answer = Some(path.clone());
                 }
-                if ui
-                    .add(Button::new("Cancel").min_size(Vec2::new(0.0, 40.0)))
-                    .clicked()
-                {
+                let cancel = ui.add(Button::new("Cancel").min_size(Vec2::new(0.0, 40.0)));
+                // Keyboard focus starts on Cancel, so Enter backs out.
+                if ui.memory(|m| m.focused().is_none()) {
+                    cancel.request_focus();
+                }
+                if cancel.clicked() {
                     // A wrong answer makes the CLI abort before writing.
                     answer = Some(String::new());
                 }
@@ -620,7 +660,7 @@ impl App {
         }
         if let Some(a) = answer {
             job.answer(&a, &mut self.log);
-            self.prompt_input.clear();
+            self.prompt_shown = None;
         }
     }
 
@@ -700,6 +740,7 @@ impl App {
     fn draw(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.poll_job(&ctx);
+        self.poll_update();
         self.handle_close(&ctx);
         self.handle_drop(&ctx);
 

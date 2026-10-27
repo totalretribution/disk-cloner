@@ -1,6 +1,6 @@
 [package]
 name = "disk-cloner"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "CLI tool to image, restore and clone a whole disk using partclone"
 license = "MIT"
@@ -17,10 +17,11 @@ zstd = "0.14.1"
 sha2 = "0.11.0"
 eframe = { version = "0.36", optional = true }
 rfd = { version = "0.17", optional = true }
+update-informer = { version = "1.3", optional = true, default-features = false, features = ["github", "ureq", "rustls-tls"] }
 
 [features]
 # Build the egui front end: cargo build --release --features gui
-gui = ["dep:eframe", "dep:rfd"]
+gui = ["dep:eframe", "dep:rfd", "dep:update-informer"]
 
 [[bin]]
 name = "disk-cloner"
