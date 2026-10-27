@@ -1213,7 +1213,7 @@ impl WriteForm {
             None => "Erase and write…".into(),
         };
         Footer {
-            hint: "Nothing is written until you type the drive's path to confirm.".into(),
+            hint: "Nothing is written until you confirm in the next step.".into(),
             label,
             danger: true,
             action: self.action(list),
@@ -1400,7 +1400,7 @@ impl CloneForm {
             None => "Erase and clone…".into(),
         };
         Footer {
-            hint: "Nothing is written until you type the target's path to confirm.".into(),
+            hint: "Nothing is written until you confirm in the next step.".into(),
             label,
             danger: true,
             action: self.action(list),

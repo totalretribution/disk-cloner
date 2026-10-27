@@ -8,3 +8,6 @@
 ptable.sfdisk
 manifest.json
 *.zip
+
+# Per-machine Claude Code settings
+.claude/settings.local.json
